@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Check,
   Copy,
-  ExternalLink,
   Lock,
   LogOut,
   Megaphone,
@@ -13,6 +12,11 @@ import {
   X,
 } from 'lucide-react';
 import type { AdSenseConfig, BroadcastMessage, CatalogSnapshot } from '../types/offers';
+import { sendBrowserPushNotification } from '../utils/notifications';
+
+const ADMIN_PIN_STORAGE_KEY = 'risparmio_live_local_admin_pin_v1';
+const ADSENSE_STORAGE_KEY = 'risparmio_live_local_adsense_v1';
+const BROADCASTS_STORAGE_KEY = 'risparmio_live_local_broadcasts_v1';
 
 interface ControlPanelModalProps {
   open: boolean;
@@ -24,12 +28,29 @@ interface ControlPanelModalProps {
   snapshot: CatalogSnapshot | null;
   onSyncAll: () => void;
   isSyncing: boolean;
+  onBroadcastCreated: (msg: BroadcastMessage) => void;
+  onBroadcastRemoved: (id: string) => void;
 }
 
-interface AdminStatusResponse {
-  configured: boolean;
-  envConfigured: boolean;
-  authenticated: boolean;
+async function hashPin(pin: string): Promise<string> {
+  const clean = pin.trim();
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const encoded = new TextEncoder().encode(`risparmio-live:${clean}`);
+    const digest = await crypto.subtle.digest('SHA-256', encoded);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  return `plain:${clean}`;
+}
+
+function readLocalBroadcasts(): BroadcastMessage[] {
+  try {
+    const raw = localStorage.getItem(BROADCASTS_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as BroadcastMessage[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 export function ControlPanelModal({
@@ -42,9 +63,10 @@ export function ControlPanelModal({
   snapshot,
   onSyncAll,
   isSyncing,
+  onBroadcastCreated,
+  onBroadcastRemoved,
 }: ControlPanelModalProps) {
-  const [status, setStatus] = useState<AdminStatusResponse | null>(null);
-  const [statusLoading, setStatusLoading] = useState(false);
+  const [pinConfigured, setPinConfigured] = useState<boolean>(false);
   const [pinInput, setPinInput] = useState('');
   const [confirmPinInput, setConfirmPinInput] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -72,24 +94,6 @@ export function ControlPanelModal({
   const [pushFeedback, setPushFeedback] = useState<string | null>(null);
   const [pushError, setPushError] = useState<string | null>(null);
   const [broadcasts, setBroadcasts] = useState<BroadcastMessage[]>([]);
-  const [connectedClients, setConnectedClients] = useState<number>(0);
-
-  const loadBroadcasts = useCallback(async (token: string) => {
-    try {
-      const res = await fetch('/api/admin/broadcasts', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) return;
-      const data = (await res.json()) as {
-        broadcasts?: BroadcastMessage[];
-        connectedClients?: number;
-      };
-      setBroadcasts(data.broadcasts ?? []);
-      setConnectedClients(data.connectedClients ?? 0);
-    } catch {
-      // Ignore transient error
-    }
-  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -98,25 +102,13 @@ export function ControlPanelModal({
     setSaveError(null);
     setPushFeedback(null);
     setPushError(null);
-    setStatusLoading(true);
-
-    fetch('/api/admin/status', {
-      headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {},
-    })
-      .then((r) => r.json() as Promise<AdminStatusResponse>)
-      .then((data) => {
-        setStatus(data);
-        if (!data.authenticated && adminToken) {
-          onAdminTokenChange(null);
-        } else if (data.authenticated && adminToken) {
-          void loadBroadcasts(adminToken);
-        }
-      })
-      .catch(() => {
-        setAuthError('Impossibile verificare lo stato del pannello di controllo.');
-      })
-      .finally(() => setStatusLoading(false));
-  }, [open, adminToken, onAdminTokenChange, loadBroadcasts]);
+    try {
+      setPinConfigured(Boolean(localStorage.getItem(ADMIN_PIN_STORAGE_KEY)));
+    } catch {
+      setPinConfigured(false);
+    }
+    setBroadcasts(readLocalBroadcasts());
+  }, [open]);
 
   useEffect(() => {
     if (!adsenseConfig) return;
@@ -132,28 +124,21 @@ export function ControlPanelModal({
 
   if (!open) return null;
 
-  const isAuthenticated = Boolean(adminToken && status?.authenticated);
+  const isAuthenticated = Boolean(adminToken);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
     setAuthSubmitting(true);
     try {
-      const res = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: pinInput }),
-      });
-      const data = (await res.json()) as { token?: string; error?: string };
-      if (!res.ok || !data.token) {
-        setAuthError(data.error || 'PIN non valido.');
+      const storedHash = localStorage.getItem(ADMIN_PIN_STORAGE_KEY);
+      const enteredHash = await hashPin(pinInput);
+      if (!storedHash || storedHash !== enteredHash) {
+        setAuthError('PIN non valido.');
         return;
       }
       setPinInput('');
-      onAdminTokenChange(data.token);
-      setStatus((prev) => (prev ? { ...prev, authenticated: true } : prev));
-    } catch {
-      setAuthError('Errore di rete durante la verifica del PIN.');
+      onAdminTokenChange('local-admin-session');
     } finally {
       setAuthSubmitting(false);
     }
@@ -162,52 +147,34 @@ export function ControlPanelModal({
   const handleBootstrapPin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
-    if (pinInput.trim() !== confirmPinInput.trim()) {
+    const cleanPin = pinInput.trim();
+    if (!/^\d{4,12}$/.test(cleanPin)) {
+      setAuthError('Il PIN deve contenere da 4 a 12 cifre.');
+      return;
+    }
+    if (cleanPin !== confirmPinInput.trim()) {
       setAuthError('I due PIN inseriti non coincidono.');
       return;
     }
     setAuthSubmitting(true);
     try {
-      const res = await fetch('/api/admin/bootstrap', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: pinInput }),
-      });
-      const data = (await res.json()) as { token?: string; error?: string };
-      if (!res.ok || !data.token) {
-        setAuthError(data.error || 'Impossibile salvare il PIN iniziale.');
-        return;
-      }
+      const hashed = await hashPin(cleanPin);
+      localStorage.setItem(ADMIN_PIN_STORAGE_KEY, hashed);
       setPinInput('');
       setConfirmPinInput('');
-      onAdminTokenChange(data.token);
-      setStatus({ configured: true, envConfigured: false, authenticated: true });
-    } catch {
-      setAuthError('Errore di rete durante la configurazione del PIN.');
+      setPinConfigured(true);
+      onAdminTokenChange('local-admin-session');
     } finally {
       setAuthSubmitting(false);
     }
   };
 
-  const handleLogout = async () => {
-    if (adminToken) {
-      await fetch('/api/admin/logout', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${adminToken}` },
-      }).catch(() => {});
-    }
+  const handleExitPanel = () => {
     onAdminTokenChange(null);
-    setStatus((prev) => (prev ? { ...prev, authenticated: false } : prev));
-  };
-
-  const handleExitPanel = async () => {
-    if (adminToken) {
-      await handleLogout();
-    }
     onClose();
   };
 
-  const handleSaveAdsense = async (e: React.FormEvent) => {
+  const handleSaveAdsense = (e: React.FormEvent) => {
     e.preventDefault();
     if (!adminToken) return;
     setSavingAdsense(true);
@@ -215,38 +182,35 @@ export function ControlPanelModal({
     setSaveError(null);
 
     try {
-      const res = await fetch('/api/admin/adsense', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({
-          enabled,
-          publisherId,
-          autoAds,
-          headerSlotId,
-          inFeedSlotId,
-          footerSlotId,
-          inFeedInterval,
-          showAdminPreview,
-        }),
-      });
-      const data = (await res.json()) as AdSenseConfig & { error?: string };
-      if (!res.ok) {
-        setSaveError(data.error || 'Errore nel salvataggio della configurazione AdSense.');
+      const cleanPub = publisherId.trim();
+      if (enabled && !/^ca-pub-\d{10,20}$/.test(cleanPub)) {
+        setSaveError('Inserisci un Publisher ID valido nel formato ca-pub-1234567890123456.');
         return;
       }
-      onAdsenseUpdated(data);
-      setSaveMessage('Configurazione Google AdSense salvata e attivata.');
+
+      const nextConfig: AdSenseConfig = {
+        enabled,
+        publisherId: cleanPub,
+        autoAds,
+        headerSlotId: headerSlotId.trim(),
+        inFeedSlotId: inFeedSlotId.trim(),
+        footerSlotId: footerSlotId.trim(),
+        inFeedInterval: Math.min(24, Math.max(3, Number(inFeedInterval) || 6)),
+        showAdminPreview,
+        updatedAt: new Date().toISOString(),
+      };
+
+      localStorage.setItem(ADSENSE_STORAGE_KEY, JSON.stringify(nextConfig));
+      onAdsenseUpdated(nextConfig);
+      setSaveMessage('Configurazione Google AdSense salvata in locale.');
     } catch {
-      setSaveError('Errore di connessione al server.');
+      setSaveError('Impossibile salvare la configurazione nel browser.');
     } finally {
       setSavingAdsense(false);
     }
   };
 
-  const handleSendBroadcast = async (e: React.FormEvent) => {
+  const handleSendBroadcast = (e: React.FormEvent) => {
     e.preventDefault();
     if (!adminToken) return;
     setPushSending(true);
@@ -254,56 +218,46 @@ export function ControlPanelModal({
     setPushError(null);
 
     try {
-      const res = await fetch('/api/admin/broadcast', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({
-          title: pushTitle,
-          body: pushBody,
-          linkUrl: pushLinkUrl,
-        }),
-      });
-      const data = (await res.json()) as {
-        broadcast?: BroadcastMessage;
-        connectedClients?: number;
-        error?: string;
-      };
-      if (!res.ok || !data.broadcast) {
-        setPushError(data.error || 'Impossibile inviare il messaggio push.');
+      const cleanTitle = pushTitle.trim();
+      const cleanBody = pushBody.trim();
+      const cleanLink = pushLinkUrl.trim();
+      if (cleanTitle.length < 2 || cleanBody.length < 2) {
+        setPushError('Inserisci titolo e testo del messaggio.');
+        return;
+      }
+      if (cleanLink && !/^https?:\/\/.+/i.test(cleanLink)) {
+        setPushError('Il link di destinazione deve iniziare con https:// o http://.');
         return;
       }
 
-      setBroadcasts((prev) => [data.broadcast!, ...prev].slice(0, 20));
-      setConnectedClients(data.connectedClients ?? 0);
+      const msg: BroadcastMessage = {
+        id: `bcast-${Date.now()}`,
+        title: cleanTitle.slice(0, 100),
+        body: cleanBody.slice(0, 320),
+        linkUrl: cleanLink || undefined,
+        createdAt: new Date().toISOString(),
+      };
+
+      const nextList = [msg, ...broadcasts].slice(0, 20);
+      localStorage.setItem(BROADCASTS_STORAGE_KEY, JSON.stringify(nextList));
+      setBroadcasts(nextList);
+      onBroadcastCreated(msg);
+      sendBrowserPushNotification(msg.title, msg.body, msg.linkUrl);
+
       setPushTitle('');
       setPushBody('');
       setPushLinkUrl('');
-      setPushFeedback(
-        `Messaggio push inviato a tutti (${data.connectedClients ?? 0} dispositivi connessi in tempo reale + banner globale attivo).`
-      );
-    } catch {
-      setPushError('Errore di rete durante l’invio del messaggio push.');
+      setPushFeedback('Avviso pubblicato nel banner dell’app e inviato come notifica browser.');
     } finally {
       setPushSending(false);
     }
   };
 
-  const handleDeleteBroadcast = async (id: string) => {
-    if (!adminToken) return;
-    try {
-      const res = await fetch(`/api/admin/broadcast/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      if (res.ok) {
-        setBroadcasts((prev) => prev.filter((b) => b.id !== id));
-      }
-    } catch {
-      // Ignore error
-    }
+  const handleDeleteBroadcast = (id: string) => {
+    const nextList = broadcasts.filter((b) => b.id !== id);
+    localStorage.setItem(BROADCASTS_STORAGE_KEY, JSON.stringify(nextList));
+    setBroadcasts(nextList);
+    onBroadcastRemoved(id);
   };
 
   const cleanPubNumeric = publisherId.trim().replace(/^ca-/, '');
@@ -328,7 +282,7 @@ export function ControlPanelModal({
                 Pannello di Controllo
               </h2>
               <p className="text-xs text-slate-500">
-                Gestione monetizzazione Google AdSense e stato aggregatore
+                Gestione locale Google AdSense, annunci e stato catalogo
               </p>
             </div>
           </div>
@@ -336,7 +290,7 @@ export function ControlPanelModal({
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => void handleExitPanel()}
+              onClick={handleExitPanel}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
@@ -356,12 +310,7 @@ export function ControlPanelModal({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-6">
-          {statusLoading ? (
-            <div className="py-12 text-center text-sm text-slate-500">
-              Verifica accesso in corso…
-            </div>
-          ) : !status?.configured ? (
-            /* First-Run PIN Setup / Claim Form */
+          {!pinConfigured ? (
             <form onSubmit={(e) => void handleBootstrapPin(e)} className="max-w-sm mx-auto py-4 space-y-4">
               <div className="text-center space-y-1.5">
                 <Lock className="w-7 h-7 text-slate-700 mx-auto" aria-hidden="true" />
@@ -369,8 +318,8 @@ export function ControlPanelModal({
                   Configura PIN Amministratore
                 </h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Primo avvio: imposta il PIN di accesso al pannello di controllo (4–12 cifre).
-                  Verrà salvato in modo sicuro tramite hash lato server.
+                  Primo avvio: imposta un PIN locale (4–12 cifre) per proteggere le impostazioni
+                  AdSense e il pannello di controllo su questo dispositivo.
                 </p>
               </div>
 
@@ -429,7 +378,6 @@ export function ControlPanelModal({
               </button>
             </form>
           ) : !isAuthenticated ? (
-            /* Standard PIN Access Gate */
             <form onSubmit={(e) => void handleLogin(e)} className="max-w-sm mx-auto py-6 space-y-4">
               <div className="text-center space-y-1.5">
                 <Lock className="w-7 h-7 text-slate-700 mx-auto" aria-hidden="true" />
@@ -437,8 +385,8 @@ export function ControlPanelModal({
                   Accesso Riservato
                 </h3>
                 <p className="text-xs text-slate-600">
-                  Inserisci il PIN amministratore per sbloccare le impostazioni AdSense e il
-                  pannello di controllo.
+                  Inserisci il PIN locale per sbloccare le impostazioni AdSense e il pannello di
+                  controllo.
                 </p>
               </div>
 
@@ -477,7 +425,6 @@ export function ControlPanelModal({
               </button>
             </form>
           ) : (
-            /* Authenticated Admin Workspace */
             <div className="space-y-6">
               <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-lg">
                 <button
@@ -495,7 +442,7 @@ export function ControlPanelModal({
                   type="button"
                   onClick={() => {
                     setTab('push');
-                    if (adminToken) void loadBroadcasts(adminToken);
+                    setBroadcasts(readLocalBroadcasts());
                   }}
                   className={`py-2 px-3 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
                     tab === 'push'
@@ -519,15 +466,14 @@ export function ControlPanelModal({
               </div>
 
               {tab === 'adsense' ? (
-                <form onSubmit={(e) => void handleSaveAdsense(e)} className="space-y-5">
+                <form onSubmit={handleSaveAdsense} className="space-y-5">
                   <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between gap-4">
                     <div>
                       <p className="text-sm font-semibold text-slate-900">
                         Attiva monetizzazione Google AdSense
                       </p>
                       <p className="text-xs text-slate-600 mt-0.5">
-                        Carica lo script ufficiale AdSense, attiva gli spazi pubblicitari e pubblica
-                        automaticamente il file /ads.txt.
+                        Carica lo script ufficiale AdSense e mostra gli spazi pubblicitari in pagina.
                       </p>
                     </div>
                     <input
@@ -651,21 +597,11 @@ export function ControlPanelModal({
                     </label>
                   </div>
 
-                  {/* Dynamic ads.txt output */}
                   <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-semibold text-slate-800">
-                        File /ads.txt generato automaticamente
+                        Riga da inserire in public/ads.txt
                       </span>
-                      <a
-                        href="/ads.txt"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 hover:underline"
-                      >
-                        <span>Apri /ads.txt</span>
-                        <ExternalLink className="w-3 h-3" aria-hidden="true" />
-                      </a>
                     </div>
                     <div className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2">
                       <code className="text-xs font-mono text-slate-700 truncate">
@@ -712,7 +648,7 @@ export function ControlPanelModal({
 
                     <button
                       type="button"
-                      onClick={() => void handleExitPanel()}
+                      onClick={handleExitPanel}
                       className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
@@ -722,23 +658,20 @@ export function ControlPanelModal({
                 </form>
               ) : tab === 'push' ? (
                 <div className="space-y-6">
-                  <form onSubmit={(e) => void handleSendBroadcast(e)} className="space-y-4">
+                  <form onSubmit={handleSendBroadcast} className="space-y-4">
                     <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between gap-4">
                       <div className="flex items-start gap-2.5">
                         <Megaphone className="w-4 h-4 text-emerald-700 mt-0.5 shrink-0" aria-hidden="true" />
                         <div>
                           <p className="text-sm font-semibold text-slate-900">
-                            Invia Notifica Push a Tutti gli Utenti
+                            Pubblica Annuncio &amp; Notifica Push Locale
                           </p>
                           <p className="text-xs text-slate-600 mt-0.5">
-                            Invia istantaneamente una notifica push e un banner globale a tutti i
-                            visitatori collegati o che apriranno l&apos;app.
+                            Mostra un banner in evidenza nell&apos;app e attiva la notifica push del
+                            browser su questo dispositivo.
                           </p>
                         </div>
                       </div>
-                      <span className="text-xs font-mono font-semibold text-emerald-800 bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-md shrink-0 tabular-nums">
-                        {connectedClients} online
-                      </span>
                     </div>
 
                     <div>
@@ -776,7 +709,7 @@ export function ControlPanelModal({
                         rows={3}
                         value={pushBody}
                         onChange={(e) => setPushBody(e.target.value)}
-                        placeholder="Scrivi il messaggio da recapitare a tutti gli utenti…"
+                        placeholder="Scrivi il messaggio dell’avviso…"
                         className="w-full p-3 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-600 resize-none"
                       />
                     </div>
@@ -817,12 +750,12 @@ export function ControlPanelModal({
                         className="px-5 py-2.5 text-sm font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 disabled:opacity-60 inline-flex items-center gap-2 transition-colors cursor-pointer"
                       >
                         <Send className="w-4 h-4" aria-hidden="true" />
-                        <span>{pushSending ? 'Invio in corso…' : 'Invia Push a Tutti'}</span>
+                        <span>{pushSending ? 'Invio in corso…' : 'Pubblica Avviso'}</span>
                       </button>
 
                       <button
                         type="button"
-                        onClick={() => void handleExitPanel()}
+                        onClick={handleExitPanel}
                         className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                       >
                         <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
@@ -831,14 +764,13 @@ export function ControlPanelModal({
                     </div>
                   </form>
 
-                  {/* Sent broadcasts history */}
                   <div className="space-y-2.5">
                     <h3 className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
-                      Messaggi inviati di recente ({broadcasts.length})
+                      Messaggi pubblicati ({broadcasts.length})
                     </h3>
                     {broadcasts.length === 0 ? (
                       <p className="text-xs text-slate-500 py-4 text-center border border-dashed border-slate-200 rounded-xl">
-                        Nessun messaggio broadcast inviato.
+                        Nessun messaggio pubblicato.
                       </p>
                     ) : (
                       <ul className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-56 overflow-y-auto">
@@ -857,7 +789,7 @@ export function ControlPanelModal({
                             </div>
                             <button
                               type="button"
-                              onClick={() => void handleDeleteBroadcast(msg.id)}
+                              onClick={() => handleDeleteBroadcast(msg.id)}
                               aria-label="Elimina messaggio"
                               className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors shrink-0 cursor-pointer"
                             >
@@ -885,9 +817,9 @@ export function ControlPanelModal({
                       </p>
                     </div>
                     <div className="p-4 border border-slate-200 rounded-xl">
-                      <p className="text-xs text-slate-500">Durata Sync</p>
-                      <p className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-1">
-                        {snapshot?.lastSyncDurationMs ?? 0}ms
+                      <p className="text-xs text-slate-500">Modalità Hosting</p>
+                      <p className="text-sm font-bold text-emerald-700 mt-1.5">
+                        Statica (Gratuita)
                       </p>
                     </div>
                   </div>
@@ -920,12 +852,12 @@ export function ControlPanelModal({
                         className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`}
                         aria-hidden="true"
                       />
-                      <span>{isSyncing ? 'Sincronizzazione…' : 'Forza Sincronizzazione Fonti'}</span>
+                      <span>{isSyncing ? 'Aggiornamento…' : 'Aggiorna Catalogo'}</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => void handleExitPanel()}
+                      onClick={handleExitPanel}
                       className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       <LogOut className="w-3.5 h-3.5" aria-hidden="true" />

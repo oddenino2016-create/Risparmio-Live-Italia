@@ -1,41 +1,3 @@
-import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { auth } from '../firebase';
-
-export const CALENDAR_SCOPES = [
-  'https://www.googleapis.com/auth/calendar.events.owned',
-];
-
-const calendarProvider = new GoogleAuthProvider();
-for (const scope of CALENDAR_SCOPES) {
-  calendarProvider.addScope(scope);
-}
-calendarProvider.setCustomParameters({
-  prompt: 'consent select_account',
-});
-
-// Strict in-memory token cache (never stored in localStorage/sessionStorage)
-let cachedCalendarAccessToken: string | null = null;
-
-export function getCachedCalendarAccessToken(): string | null {
-  return cachedCalendarAccessToken;
-}
-
-export function clearCalendarAccessToken(): void {
-  cachedCalendarAccessToken = null;
-}
-
-export async function authorizeGoogleCalendar(): Promise<string> {
-  const result = await signInWithPopup(auth, calendarProvider);
-  const credential = GoogleAuthProvider.credentialFromResult(result);
-  if (!credential?.accessToken) {
-    throw new Error(
-      'Impossibile ottenere il token di accesso per Google Calendar. Riprova e concedi il permesso richiesto.'
-    );
-  }
-  cachedCalendarAccessToken = credential.accessToken;
-  return credential.accessToken;
-}
-
 export interface CalendarEventTarget {
   id: string;
   merchant: string;
@@ -65,7 +27,7 @@ export function computeCalendarWindow(expiresAtIso: string): {
     throw new Error('Data di scadenza non valida.');
   }
 
-  // If the upstream date came in at midnight UTC/local or 23:59, schedule a practical morning reminder (09:00-10:00) on that expiry day
+  // If upstream date came in at midnight or 23:59, schedule a practical morning slot (09:00-10:00) on that expiry day
   const hours = parsed.getHours();
   const minutes = parsed.getMinutes();
   let start: Date;
@@ -87,23 +49,18 @@ export function computeCalendarWindow(expiresAtIso: string): {
   };
 }
 
-export async function createGoogleCalendarExpiryEvent(
-  target: CalendarEventTarget,
-  options?: {
-    summary?: string;
-    reminder24h?: boolean;
-    reminder1h?: boolean;
-  }
-): Promise<CreatedCalendarEvent> {
-  let token = getCachedCalendarAccessToken();
-  if (!token) {
-    token = await authorizeGoogleCalendar();
-  }
+function toGoogleCalendarUtcStamp(iso: string): string {
+  return iso.replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
 
-  const { startIso, endIso, timeZone } = computeCalendarWindow(target.expiresAt);
-  const summary =
-    options?.summary?.trim() ||
-    `Scadenza offerta: ${target.merchant} (${target.rewardLabel})`;
+function buildEventTextAndDetails(
+  target: CalendarEventTarget,
+  summaryOverride?: string
+): { summary: string; details: string } {
+  const summary = (
+    summaryOverride?.trim() ||
+    `Scadenza offerta: ${target.merchant} (${target.rewardLabel})`
+  ).slice(0, 200);
 
   const lines: string[] = [
     target.title,
@@ -121,62 +78,100 @@ export async function createGoogleCalendarExpiryEvent(
     lines.push(`Link offerta: ${target.offerUrl}`);
   }
 
-  const overrides: Array<{ method: 'popup'; minutes: number }> = [];
+  return { summary, details: lines.join('\n') };
+}
+
+export function buildGoogleCalendarTemplateUrl(
+  target: CalendarEventTarget,
+  options?: { summary?: string }
+): string {
+  const { startIso, endIso, timeZone } = computeCalendarWindow(target.expiresAt);
+  const { summary, details } = buildEventTextAndDetails(target, options?.summary);
+
+  const url = new URL('https://calendar.google.com/calendar/render');
+  url.searchParams.set('action', 'TEMPLATE');
+  url.searchParams.set('text', summary);
+  url.searchParams.set(
+    'dates',
+    `${toGoogleCalendarUtcStamp(startIso)}/${toGoogleCalendarUtcStamp(endIso)}`
+  );
+  url.searchParams.set('details', details);
+  url.searchParams.set('ctz', timeZone);
+  return url.toString();
+}
+
+function escapeIcsText(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
+}
+
+export function downloadCalendarIcs(
+  target: CalendarEventTarget,
+  options?: {
+    summary?: string;
+    reminder24h?: boolean;
+    reminder1h?: boolean;
+  }
+): void {
+  const { startIso, endIso } = computeCalendarWindow(target.expiresAt);
+  const { summary, details } = buildEventTextAndDetails(target, options?.summary);
+  const nowStamp = toGoogleCalendarUtcStamp(new Date().toISOString());
+  const startStamp = toGoogleCalendarUtcStamp(startIso);
+  const endStamp = toGoogleCalendarUtcStamp(endIso);
+  const safeUid = `${target.id.replace(/[^a-zA-Z0-9_-]/g, '_')}@risparmiolive.it`;
+
+  const lines: string[] = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Risparmio Live Italia//Promemoria Offerte//IT',
+    'CALSCALE:GREGORIAN',
+    'BEGIN:VEVENT',
+    `UID:${safeUid}`,
+    `DTSTAMP:${nowStamp}`,
+    `DTSTART:${startStamp}`,
+    `DTEND:${endStamp}`,
+    `SUMMARY:${escapeIcsText(summary)}`,
+    `DESCRIPTION:${escapeIcsText(details)}`,
+  ];
+
+  if (/^https?:\/\//i.test(target.offerUrl)) {
+    lines.push(`URL:${target.offerUrl}`);
+  }
+
   if (options?.reminder24h !== false) {
-    overrides.push({ method: 'popup', minutes: 1440 });
+    lines.push(
+      'BEGIN:VALARM',
+      'ACTION:DISPLAY',
+      `DESCRIPTION:${escapeIcsText(`Scade domani: ${summary}`)}`,
+      'TRIGGER:-P1D',
+      'END:VALARM'
+    );
   }
+
   if (options?.reminder1h !== false) {
-    overrides.push({ method: 'popup', minutes: 60 });
+    lines.push(
+      'BEGIN:VALARM',
+      'ACTION:DISPLAY',
+      `DESCRIPTION:${escapeIcsText(`Scade tra 1 ora: ${summary}`)}`,
+      'TRIGGER:-PT1H',
+      'END:VALARM'
+    );
   }
 
-  const body = {
-    summary: summary.slice(0, 200),
-    description: lines.join('\n'),
-    start: {
-      dateTime: startIso,
-      timeZone,
-    },
-    end: {
-      dateTime: endIso,
-      timeZone,
-    },
-    reminders:
-      overrides.length > 0
-        ? { useDefault: false, overrides }
-        : { useDefault: true },
-    source: /^https?:\/\//i.test(target.offerUrl)
-      ? { title: 'Risparmio Live Italia', url: target.offerUrl }
-      : undefined,
-  };
+  lines.push('END:VEVENT', 'END:VCALENDAR');
 
-  const sendInsert = (bearer: string) =>
-    fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${bearer}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-  let res = await sendInsert(token);
-  if (res.status === 401 || res.status === 403) {
-    clearCalendarAccessToken();
-    token = await authorizeGoogleCalendar();
-    res = await sendInsert(token);
-  }
-
-  if (!res.ok) {
-    const errBody = await res.json().catch(() => ({}));
-    const apiMsg =
-      (errBody as { error?: { message?: string } })?.error?.message ||
-      `Errore Google Calendar (${res.status})`;
-    throw new Error(apiMsg);
-  }
-
-  const data = (await res.json()) as { id?: string; htmlLink?: string };
-  return {
-    id: data.id || target.id,
-    htmlLink: data.htmlLink,
-  };
+  const blob = new Blob([lines.join('\r\n')], {
+    type: 'text/calendar;charset=utf-8',
+  });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = `scadenza-${target.merchant.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'offerta'}.ics`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }

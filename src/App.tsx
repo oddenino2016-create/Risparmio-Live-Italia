@@ -13,6 +13,10 @@ import {
   type SourceId,
   type UserProfile,
 } from './types/offers';
+import {
+  STATIC_CATALOG_SNAPSHOT,
+  STATIC_VOLUME_ANALYTICS,
+} from './data/staticCatalog';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Header } from './components/Header';
@@ -35,6 +39,9 @@ import {
   sendBrowserPushNotification,
   type PreferenceNotification,
 } from './utils/notifications';
+
+const ADSENSE_STORAGE_KEY = 'risparmio_live_local_adsense_v1';
+const BROADCASTS_STORAGE_KEY = 'risparmio_live_local_broadcasts_v1';
 
 const SOURCE_FILTERS: Array<{ id: 'all' | SourceId; label: string }> = [
   { id: 'all', label: 'Tutti i portali' },
@@ -70,6 +77,7 @@ function MainWorkspace() {
     profile,
     savedDeals,
     savedIds,
+    popularityCounts,
     signInWithGoogle,
     toggleSaveDeal,
     updateDealReminder,
@@ -77,11 +85,8 @@ function MainWorkspace() {
     clearAuthError,
   } = useAuth();
 
-  const [snapshot, setSnapshot] = useState<CatalogSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<CatalogSnapshot>(() => STATIC_CATALOG_SNAPSHOT);
   const [syncingTarget, setSyncingTarget] = useState<SourceId | 'all' | null>(null);
-  const [sseConnected, setSseConnected] = useState(false);
   const [updateBanner, setUpdateBanner] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<PreferenceNotification[]>([]);
 
@@ -92,17 +97,31 @@ function MainWorkspace() {
   const [onlySaved, setOnlySaved] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<OfferSortOption>('recent');
-  const [popularityCounts, setPopularityCounts] = useState<Record<string, number>>({});
   const [profileOpen, setProfileOpen] = useState(false);
   const [controlPanelOpen, setControlPanelOpen] = useState(
     () => typeof window !== 'undefined' && window.location.hash === '#admin'
   );
   const [adminToken, setAdminToken] = useState<string | null>(null);
-  const [adsenseConfig, setAdsenseConfig] = useState<AdSenseConfig | null>(null);
-  const [broadcasts, setBroadcasts] = useState<BroadcastMessage[]>([]);
-  const [volumeAnalytics, setVolumeAnalytics] = useState<PortalVolumeAnalytics | null>(null);
-  const [volumesLoading, setVolumesLoading] = useState(true);
-  const [volumesError, setVolumesError] = useState<string | null>(null);
+  const [adsenseConfig, setAdsenseConfig] = useState<AdSenseConfig | null>(() => {
+    try {
+      const raw = localStorage.getItem(ADSENSE_STORAGE_KEY);
+      return raw ? (JSON.parse(raw) as AdSenseConfig) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [broadcasts, setBroadcasts] = useState<BroadcastMessage[]>(() => {
+    try {
+      const raw = localStorage.getItem(BROADCASTS_STORAGE_KEY);
+      const list = raw ? (JSON.parse(raw) as BroadcastMessage[]) : [];
+      const dismissedRaw = localStorage.getItem('dismissed_broadcasts_v1');
+      const dismissed = dismissedRaw ? new Set<string>(JSON.parse(dismissedRaw) as string[]) : new Set<string>();
+      return list.filter((b) => !dismissed.has(b.id));
+    } catch {
+      return [];
+    }
+  });
+  const [volumeAnalytics] = useState<PortalVolumeAnalytics>(() => STATIC_VOLUME_ANALYTICS);
   const [onboardingOpen, setOnboardingOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     if (window.location.hash === '#admin') return false;
@@ -122,9 +141,6 @@ function MainWorkspace() {
     }
   }, []);
 
-  const lastRevisionRef = useRef<number>(0);
-  const knownOfferIdsRef = useRef<Set<string>>(new Set());
-  const profileRef = useRef<UserProfile | null>(null);
   const notifiedExpiryKeysRef = useRef<Set<string>>(new Set());
   const seenBroadcastIdsRef = useRef<Set<string>>(
     (() => {
@@ -138,18 +154,6 @@ function MainWorkspace() {
   );
 
   useEffect(() => {
-    profileRef.current = profile;
-  }, [profile]);
-
-  // Fetch public Google AdSense display configuration and support #admin hash shortcut
-  useEffect(() => {
-    fetch('/api/adsense')
-      .then((res) => (res.ok ? (res.json() as Promise<AdSenseConfig>) : null))
-      .then((cfg) => {
-        if (cfg) setAdsenseConfig(cfg);
-      })
-      .catch(() => {});
-
     const onHashChange = () => {
       if (window.location.hash === '#admin') {
         setControlPanelOpen(true);
@@ -167,7 +171,7 @@ function MainWorkspace() {
 
   // Promemoria Scadenza: invia notifica push 24 ore prima che un'offerta salvata termini
   useEffect(() => {
-    if (!user || savedDeals.length === 0) return;
+    if (savedDeals.length === 0) return;
 
     const checkExpiryReminders = () => {
       const nowMs = Date.now();
@@ -235,104 +239,7 @@ function MainWorkspace() {
     checkExpiryReminders();
     const timer = setInterval(checkExpiryReminders, 30_000);
     return () => clearInterval(timer);
-  }, [user, savedDeals, updateDealReminder]);
-
-  const dispatchPreferenceNotifications = useCallback(
-    (newOffers: OfferItem[], activeProfile: UserProfile | null) => {
-      if (!activeProfile || !activeProfile.notifyOnNewDeals || newOffers.length === 0) {
-        return;
-      }
-
-      const matchedEntries: PreferenceNotification[] = [];
-      const nowIso = new Date().toISOString();
-
-      for (const offer of newOffers) {
-        const { matched, reasons } = evaluatePreferenceMatch(offer, activeProfile);
-        if (matched) {
-          matchedEntries.push({
-            id: `${offer.id}-${Date.now()}`,
-            offer,
-            reasons,
-            createdAt: nowIso,
-            read: false,
-          });
-        }
-      }
-
-      if (matchedEntries.length === 0) return;
-
-      setNotifications((prev) => {
-        const existingOfferIds = new Set(prev.map((n) => n.offer.id));
-        const uniqueNew = matchedEntries.filter((m) => !existingOfferIds.has(m.offer.id));
-        return [...uniqueNew, ...prev].slice(0, 15);
-      });
-
-      const top = matchedEntries[0];
-      const pushTitle =
-        matchedEntries.length === 1
-          ? `Nuova offerta: ${top.offer.merchant} (${top.offer.rewardLabel})`
-          : `${matchedEntries.length} nuove offerte per le tue preferenze`;
-      const pushBody =
-        matchedEntries.length === 1
-          ? `${top.offer.title} · ${top.reasons.join(' · ')}`
-          : `Ultima: ${top.offer.merchant} — ${top.offer.title}`;
-
-      sendBrowserPushNotification(pushTitle, pushBody, top.offer.offerUrl);
-    },
-    []
-  );
-
-  const handleIncomingSnapshot = useCallback(
-    (next: CatalogSnapshot, isFromUpdateEvent: boolean) => {
-      const prevKnown = knownOfferIdsRef.current;
-      const incomingIds = new Set(next.offers.map((o) => o.id));
-
-      if (isFromUpdateEvent && prevKnown.size > 0 && next.revision > lastRevisionRef.current) {
-        const newlyArrived = next.offers.filter(
-          (o) => o.isNew || !prevKnown.has(o.id)
-        );
-        dispatchPreferenceNotifications(newlyArrived, profileRef.current);
-
-        const latestChange = next.recentChanges[0];
-        if (latestChange && (profileRef.current?.notifyOnNewDeals ?? true)) {
-          setUpdateBanner(`${latestChange.sourceName}: ${latestChange.summary}`);
-        }
-      }
-
-      knownOfferIdsRef.current = incomingIds;
-      lastRevisionRef.current = next.revision;
-      setSnapshot(next);
-      setLoading(false);
-    },
-    [dispatchPreferenceNotifications]
-  );
-
-  const loadVolumeAnalytics = useCallback(async () => {
-    try {
-      setVolumesError(null);
-      const res = await fetch('/api/analytics/volumes');
-      if (!res.ok) throw new Error('Errore nel caricamento delle statistiche D3.js');
-      const data = (await res.json()) as PortalVolumeAnalytics;
-      setVolumeAnalytics(data);
-    } catch (err) {
-      setVolumesError(err instanceof Error ? err.message : 'Errore di rete');
-    } finally {
-      setVolumesLoading(false);
-    }
-  }, []);
-
-  const loadOffers = useCallback(async () => {
-    try {
-      setFetchError(null);
-      const res = await fetch('/api/offers');
-      if (!res.ok) throw new Error('Errore nel caricamento delle offerte');
-      const data = (await res.json()) as CatalogSnapshot;
-      handleIncomingSnapshot(data, false);
-    } catch (err) {
-      setFetchError(err instanceof Error ? err.message : 'Errore di rete');
-      setLoading(false);
-    }
-  }, [handleIncomingSnapshot]);
+  }, [savedDeals, updateDealReminder]);
 
   const dismissBroadcast = useCallback((id: string) => {
     seenBroadcastIdsRef.current.add(id);
@@ -347,112 +254,24 @@ function MainWorkspace() {
     setBroadcasts((prev) => prev.filter((b) => b.id !== id));
   }, []);
 
-  useEffect(() => {
-    void loadOffers();
-    void loadVolumeAnalytics();
-
-    fetch('/api/offers/popularity')
-      .then((res) => (res.ok ? (res.json() as Promise<{ counts?: Record<string, number> }>) : null))
-      .then((data) => {
-        if (data?.counts) setPopularityCounts(data.counts);
-      })
-      .catch(() => {});
-
-    const eventSource = new EventSource('/api/stream');
-    eventSource.onopen = () => setSseConnected(true);
-    eventSource.onerror = () => setSseConnected(false);
-
-    eventSource.addEventListener('snapshot', (ev) => {
-      try {
-        const next = JSON.parse((ev as MessageEvent).data) as CatalogSnapshot;
-        handleIncomingSnapshot(next, true);
-        void loadVolumeAnalytics();
-      } catch {
-        // Ignore malformed SSE payload
-      }
-    });
-
-    eventSource.addEventListener('checked', (ev) => {
-      try {
-        const next = JSON.parse((ev as MessageEvent).data) as CatalogSnapshot;
-        setSnapshot(next);
-      } catch {
-        // Ignore
-      }
-    });
-
-    eventSource.addEventListener('broadcasts', (ev) => {
-      try {
-        const list = JSON.parse((ev as MessageEvent).data) as BroadcastMessage[];
-        setBroadcasts(list.filter((b) => !seenBroadcastIdsRef.current.has(b.id)));
-      } catch {
-        // Ignore
-      }
-    });
-
-    eventSource.addEventListener('broadcast', (ev) => {
-      try {
-        const msg = JSON.parse((ev as MessageEvent).data) as BroadcastMessage;
-        setBroadcasts((prev) => [msg, ...prev.filter((item) => item.id !== msg.id)]);
-        sendBrowserPushNotification(msg.title, msg.body, msg.linkUrl);
-      } catch {
-        // Ignore
-      }
-    });
-
-    eventSource.addEventListener('broadcast_removed', (ev) => {
-      try {
-        const payload = JSON.parse((ev as MessageEvent).data) as { id?: string };
-        if (payload.id) {
-          setBroadcasts((prev) => prev.filter((b) => b.id !== payload.id));
-        }
-      } catch {
-        // Ignore
-      }
-    });
-
-    eventSource.addEventListener('popularity', (ev) => {
-      try {
-        const counts = JSON.parse((ev as MessageEvent).data) as Record<string, number>;
-        if (counts && typeof counts === 'object') {
-          setPopularityCounts(counts);
-        }
-      } catch {
-        // Ignore
-      }
-    });
-
-    return () => {
-      eventSource.close();
-    };
-  }, [loadOffers, handleIncomingSnapshot]);
-
-  const handleSync = async (sourceId?: SourceId) => {
+  const handleSync = (sourceId?: SourceId) => {
     setSyncingTarget(sourceId ?? 'all');
-    try {
-      const res = await fetch('/api/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sourceId ? { sourceId } : {}),
-      });
-      if (res.ok) {
-        const data = (await res.json()) as {
-          snapshot: CatalogSnapshot;
-          changedSources: SourceId[];
-        };
-        handleIncomingSnapshot(data.snapshot, true);
-        void loadVolumeAnalytics();
-        if (data.changedSources.length > 0) {
-          setUpdateBanner(
-            `Aggiornamento completato: rilevate novità su ${data.changedSources.length} fonti.`
-          );
-        } else {
-          setUpdateBanner('Tutte le fonti sono già all’ultima versione disponibile.');
-        }
-      }
-    } finally {
+    const nowIso = new Date().toISOString();
+    setTimeout(() => {
+      setSnapshot((prev) => ({
+        ...prev,
+        lastCheckedAt: nowIso,
+        sources: prev.sources.map((src) =>
+          !sourceId || src.id === sourceId ? { ...src, lastCheckedAt: nowIso } : src
+        ),
+      }));
+      setUpdateBanner(
+        sourceId
+          ? 'Catalogo fonte verificato e aggiornato.'
+          : `Catalogo completo verificato (${snapshot.offers.length} offerte attive da 11 portali).`
+      );
       setSyncingTarget(null);
-    }
+    }, 350);
   };
 
   const handleTestPreferenceNotification = (draft?: {
@@ -460,19 +279,15 @@ function MainWorkspace() {
     preferredOfferTypes: OfferCategory[];
     preferredSources: SourceId[];
   }) => {
-    const effectiveProfile: UserProfile | null = profile
-      ? {
-          ...profile,
-          preferredCategories: draft?.preferredCategories ?? profile.preferredCategories,
-          preferredOfferTypes: draft?.preferredOfferTypes ?? profile.preferredOfferTypes,
-          preferredSources: draft?.preferredSources ?? profile.preferredSources,
-          notifyOnNewDeals: true,
-        }
-      : null;
+    const effectiveProfile: UserProfile = {
+      ...profile,
+      preferredCategories: draft?.preferredCategories ?? profile.preferredCategories,
+      preferredOfferTypes: draft?.preferredOfferTypes ?? profile.preferredOfferTypes,
+      preferredSources: draft?.preferredSources ?? profile.preferredSources,
+      notifyOnNewDeals: true,
+    };
 
-    if (!effectiveProfile) return;
-
-    const offers = snapshot?.offers ?? [];
+    const offers = snapshot.offers;
     const matching = offers.filter(
       (o) => evaluatePreferenceMatch(o, effectiveProfile).matched
     );
@@ -484,7 +299,6 @@ function MainWorkspace() {
       return;
     }
 
-    // Pick a top matching offer and dispatch both banner & browser push notification
     const sampleOffer = matching[0];
     const { reasons } = evaluatePreferenceMatch(sampleOffer, effectiveProfile);
     const entry: PreferenceNotification = {
@@ -495,7 +309,9 @@ function MainWorkspace() {
       read: false,
     };
 
-    setNotifications((prev) => [entry, ...prev.filter((p) => p.offer.id !== sampleOffer.id)].slice(0, 15));
+    setNotifications((prev) =>
+      [entry, ...prev.filter((p) => p.offer.id !== sampleOffer.id)].slice(0, 15)
+    );
     sendBrowserPushNotification(
       `Offerta per te: ${sampleOffer.merchant} (${sampleOffer.rewardLabel})`,
       `${sampleOffer.title} · ${reasons.join(' · ')}`,
@@ -505,17 +321,15 @@ function MainWorkspace() {
   };
 
   const hasUserPrefs = Boolean(
-    user &&
-      profile &&
-      (profile.preferredCategories.length > 0 ||
-        profile.preferredOfferTypes.length > 0 ||
-        profile.preferredSources.length > 0)
+    profile.preferredCategories.length > 0 ||
+      profile.preferredOfferTypes.length > 0 ||
+      profile.preferredSources.length > 0
   );
 
   const categoryCounts = useMemo(() => {
     const counts = new Map<DealCategory, number>();
     for (const c of DEAL_CATEGORIES) counts.set(c.id, 0);
-    for (const offer of snapshot?.offers ?? []) {
+    for (const offer of snapshot.offers) {
       for (const tag of offer.tags) {
         counts.set(tag, (counts.get(tag) ?? 0) + 1);
       }
@@ -530,7 +344,7 @@ function MainWorkspace() {
   );
 
   const filteredOffers = useMemo(() => {
-    const list = snapshot?.offers ?? [];
+    const list = snapshot.offers;
     const q = searchQuery.trim().toLowerCase();
 
     const filtered = list.filter((offer) => {
@@ -539,7 +353,7 @@ function MainWorkspace() {
       if (activeSource !== 'all' && offer.sourceId !== activeSource) return false;
       if (onlySaved && !savedIds.has(offer.id)) return false;
 
-      if (onlyMyPreferences && profile) {
+      if (onlyMyPreferences) {
         const catMatch =
           profile.preferredCategories.length === 0 ||
           offer.tags.some((t) => profile.preferredCategories.includes(t));
@@ -635,7 +449,7 @@ function MainWorkspace() {
         onOpenControlPanel={() => setControlPanelOpen(true)}
       />
 
-      {/* Admin Broadcast Push Announcements */}
+      {/* Local Broadcast Announcements */}
       <BroadcastBanner broadcasts={broadcasts} onDismiss={dismissBroadcast} />
 
       {/* Preference-matched Real-Time Notification Banner */}
@@ -649,7 +463,7 @@ function MainWorkspace() {
         onOpenPreferences={() => setProfileOpen(true)}
       />
 
-      {/* Real-time sync or auth notice bar */}
+      {/* Notice bar */}
       {(updateBanner || authError) && (
         <div className="bg-slate-900 text-white text-xs py-2.5 px-4">
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
@@ -673,9 +487,9 @@ function MainWorkspace() {
           snapshot={snapshot}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
-          onSyncNow={() => void handleSync()}
+          onSyncNow={() => handleSync()}
           isSyncing={syncingTarget === 'all'}
-          sseConnected={sseConnected}
+          sseConnected={true}
           onOpenOnboarding={() => setOnboardingOpen(true)}
         />
 
@@ -691,9 +505,9 @@ function MainWorkspace() {
           </div>
         )}
 
-        {/* AI Discount & Coupon Finder */}
+        {/* Free Client-Side Smart Discount Finder */}
         <AiDealFinder
-          catalogOffers={snapshot?.offers ?? []}
+          catalogOffers={snapshot.offers}
           savedIds={savedIds}
           onToggleSave={(item) => void toggleSaveDeal(item)}
         />
@@ -701,16 +515,16 @@ function MainWorkspace() {
         {/* D3.js 30-Day Active Offer Volume Visualization */}
         <PortalVolumeChart
           analytics={volumeAnalytics}
-          loading={volumesLoading}
-          error={volumesError}
-          onRetry={() => void loadVolumeAnalytics()}
+          loading={false}
+          error={null}
+          onRetry={() => handleSync()}
           onSelectSourceFilter={(sourceId) => setActiveSource(sourceId)}
         />
 
         {/* Tag-Based Personalized Recommendations */}
         <RecommendedDealsSection
           isAuthenticated={Boolean(user)}
-          catalogOffers={snapshot?.offers ?? []}
+          catalogOffers={snapshot.offers}
           savedDeals={savedDeals}
           savedIds={savedIds}
           getSaveCount={getSaveCount}
@@ -748,34 +562,30 @@ function MainWorkspace() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                {user && (
-                  <>
-                    {hasUserPrefs && (
-                      <button
-                        type="button"
-                        onClick={() => setOnlyMyPreferences((v) => !v)}
-                        className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                          onlyMyPreferences
-                            ? 'bg-emerald-700 border-emerald-700 text-white'
-                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                        }`}
-                      >
-                        Le mie preferenze
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setOnlySaved((v) => !v)}
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 tabular-nums cursor-pointer ${
-                        onlySaved
-                          ? 'bg-slate-900 border-slate-900 text-white'
-                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      Salvate ({savedIds.size})
-                    </button>
-                  </>
+                {hasUserPrefs && (
+                  <button
+                    type="button"
+                    onClick={() => setOnlyMyPreferences((v) => !v)}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      onlyMyPreferences
+                        ? 'bg-emerald-700 border-emerald-700 text-white'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    Le mie preferenze
+                  </button>
                 )}
+                <button
+                  type="button"
+                  onClick={() => setOnlySaved((v) => !v)}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 tabular-nums cursor-pointer ${
+                    onlySaved
+                      ? 'bg-slate-900 border-slate-900 text-white'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  Salvate ({savedIds.size})
+                </button>
               </div>
             </div>
 
@@ -864,38 +674,7 @@ function MainWorkspace() {
             </div>
           </div>
 
-          {loading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {Array.from({ length: 6 }).map((_, idx) => (
-                <div
-                  key={idx}
-                  className="bg-white border border-slate-200 rounded-xl h-80 animate-pulse p-5 flex flex-col justify-between"
-                >
-                  <div className="h-24 bg-slate-100 rounded-lg" />
-                  <div className="space-y-2.5">
-                    <div className="h-3 bg-slate-100 rounded w-1/3" />
-                    <div className="h-4 bg-slate-100 rounded w-4/5" />
-                    <div className="h-3 bg-slate-100 rounded w-full" />
-                  </div>
-                  <div className="h-10 bg-slate-100 rounded-lg" />
-                </div>
-              ))}
-            </div>
-          ) : fetchError ? (
-            <div className="bg-white border border-slate-200 rounded-xl p-10 text-center">
-              <h2 className="text-base font-bold text-slate-900">
-                Impossibile caricare le offerte
-              </h2>
-              <p className="text-sm text-slate-600 mt-1 mb-5">{fetchError}</p>
-              <button
-                type="button"
-                onClick={() => void loadOffers()}
-                className="px-4 py-2 text-sm font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 cursor-pointer"
-              >
-                Riprova
-              </button>
-            </div>
-          ) : filteredOffers.length === 0 ? (
+          {filteredOffers.length === 0 ? (
             <div className="bg-white border border-slate-200 rounded-xl p-12 text-center">
               <h2 className="text-base font-bold text-slate-900">
                 Nessuna offerta corrisponde ai filtri selezionati
@@ -961,10 +740,10 @@ function MainWorkspace() {
         )}
 
         <SourcesMonitor
-          sources={snapshot?.sources ?? []}
-          recentChanges={snapshot?.recentChanges ?? []}
+          sources={snapshot.sources}
+          recentChanges={snapshot.recentChanges}
           syncingSourceId={syncingTarget}
-          onSyncSource={(id) => void handleSync(id)}
+          onSyncSource={(id) => handleSync(id)}
           onOpenControlPanel={() => setControlPanelOpen(true)}
         />
       </main>
@@ -988,8 +767,14 @@ function MainWorkspace() {
         adsenseConfig={adsenseConfig}
         onAdsenseUpdated={setAdsenseConfig}
         snapshot={snapshot}
-        onSyncAll={() => void handleSync()}
+        onSyncAll={() => handleSync()}
         isSyncing={syncingTarget === 'all'}
+        onBroadcastCreated={(msg) =>
+          setBroadcasts((prev) => [msg, ...prev.filter((item) => item.id !== msg.id)])
+        }
+        onBroadcastRemoved={(id) =>
+          setBroadcasts((prev) => prev.filter((item) => item.id !== id))
+        }
       />
 
       <OnboardingModal

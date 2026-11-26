@@ -16,7 +16,7 @@ export function Header({
   onOpenProfile,
   onOpenControlPanel,
 }: HeaderProps) {
-  const { user, authLoading, savedDeals, signInWithGoogle } = useAuth();
+  const { savedDeals } = useAuth();
 
   const handleNavClick = (type: 'all' | OfferCategory) => {
     onSelectType(type);
@@ -85,28 +85,13 @@ export function Header({
             <Lock className="w-3.5 h-3.5 text-emerald-700" aria-hidden="true" />
             <span className="hidden sm:inline">Controllo</span>
           </button>
-          {authLoading ? (
-            <span className="text-xs text-slate-500 whitespace-nowrap shrink-0 px-3 py-2">
-              Caricamento…
-            </span>
-          ) : user ? (
-            <button
-              type="button"
-              onClick={onOpenProfile}
-              className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
-            >
-              Profilo ({savedDeals.length})
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void signInWithGoogle()}
-              className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
-            >
-              <span className="sm:hidden">Accedi</span>
-              <span className="hidden sm:inline">Accedi / Registrati</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onOpenProfile}
+            className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
+          >
+            Profilo ({savedDeals.length})
+          </button>
         </div>
       </div>
     </header>

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Check, Copy, ExternalLink, Search, Sparkles, X } from 'lucide-react';
 import type { AiDiscountSearchResponse, OfferItem } from '../types/offers';
+import { runLocalSmartSearch } from '../utils/localSmartSearch';
 import { OfferCard } from './OfferCard';
 
 interface AiDealFinderProps {
@@ -30,7 +31,7 @@ export function AiDealFinder({
   const runSearch = async (targetQuery: string) => {
     const clean = targetQuery.trim();
     if (clean.length < 2) {
-      setError('Inserisci almeno 2 caratteri per avviare la ricerca IA.');
+      setError('Inserisci almeno 2 caratteri per avviare la ricerca.');
       return;
     }
 
@@ -39,19 +40,8 @@ export function AiDealFinder({
     setError(null);
 
     try {
-      const res = await fetch('/api/ai/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: clean }),
-      });
-      const data = (await res.json()) as AiDiscountSearchResponse & { error?: string };
-      if (!res.ok) {
-        setError(data.error || 'Impossibile completare la ricerca con Intelligenza Artificiale.');
-        return;
-      }
+      const data = runLocalSmartSearch(clean, catalogOffers);
       setResult(data);
-    } catch {
-      setError('Errore di rete durante la ricerca intelligente.');
     } finally {
       setSearching(false);
     }
@@ -89,14 +79,14 @@ export function AiDealFinder({
           <div>
             <div className="flex items-center gap-2 text-xs font-medium text-emerald-700">
               <Sparkles className="w-4 h-4" aria-hidden="true" />
-              <span>Ricerca Intelligente Gemini + Google Search</span>
+              <span>Ricerca Intelligente Sconti · Motore Locale Gratuito</span>
             </div>
             <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight mt-1">
-              Cerca Sconti, Cashback e Coupon con l&apos;Intelligenza Artificiale
+              Cerca Sconti, Cashback e Coupon in Tempo Reale
             </h2>
             <p className="text-xs sm:text-sm text-slate-600 mt-1 max-w-2xl">
-              Descrivi cosa desideri acquistare o il negozio: l&apos;IA incrocia le offerte live
-              degli 11 portali monitorati e cerca promozioni attive sul web italiano.
+              Descrivi cosa desideri acquistare o il negozio: il motore semantico incrocia le
+              offerte degli 11 portali monitorati e ti indirizza alle promozioni attive.
             </p>
           </div>
 
@@ -110,7 +100,7 @@ export function AiDealFinder({
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 hover:text-slate-900 transition-colors self-start md:self-auto cursor-pointer"
             >
               <X className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Pulisci risultati IA</span>
+              <span>Pulisci risultati</span>
             </button>
           )}
         </div>
@@ -128,7 +118,7 @@ export function AiDealFinder({
               onChange={(e) => setQuery(e.target.value)}
               maxLength={300}
               placeholder="Es. codice sconto MediaWorld elettrodomestici oppure cashback volo Roma..."
-              aria-label="Chiedi all'intelligenza artificiale quali sconti cercare"
+              aria-label="Cerca sconti e offerte per categoria o negozio"
               className="w-full h-11 pl-10 pr-4 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/20 transition-colors"
             />
           </div>
@@ -139,7 +129,7 @@ export function AiDealFinder({
             className="h-11 px-5 inline-flex items-center justify-center gap-2 text-sm font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
           >
             <Sparkles className="w-4 h-4 text-emerald-400" aria-hidden="true" />
-            <span>{searching ? 'Analisi in corso…' : 'Cerca con IA'}</span>
+            <span>{searching ? 'Analisi in corso…' : 'Trova sconti'}</span>
           </button>
         </form>
 
@@ -188,7 +178,7 @@ export function AiDealFinder({
             {/* Strategy Summary */}
             <div className="p-4 rounded-xl bg-emerald-50/70 border border-emerald-200">
               <p className="text-xs font-semibold text-emerald-900 uppercase tracking-wide mb-1">
-                Suggerimento IA per &ldquo;{result.query}&rdquo;
+                Suggerimento per &ldquo;{result.query}&rdquo;
               </p>
               <p className="text-sm text-slate-800 leading-relaxed">{result.summary}</p>
             </div>
@@ -197,7 +187,7 @@ export function AiDealFinder({
             {matchedCatalogOffers.length > 0 && (
               <div className="space-y-3">
                 <h3 className="text-sm font-bold text-slate-900">
-                  Offerte dal Catalogo Live ({matchedCatalogOffers.length})
+                  Offerte dal Catalogo ({matchedCatalogOffers.length})
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                   {matchedCatalogOffers.map((offer) => (
@@ -212,11 +202,11 @@ export function AiDealFinder({
               </div>
             )}
 
-            {/* Web Grounded Suggestions */}
+            {/* Portal Suggestions */}
             {result.webSuggestions.length > 0 && (
               <div className="space-y-3">
                 <h3 className="text-sm font-bold text-slate-900">
-                  Altre Occasioni Rilevate sul Web ({result.webSuggestions.length})
+                  Portali Consigliati ({result.webSuggestions.length})
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {result.webSuggestions.map((item, idx) => {

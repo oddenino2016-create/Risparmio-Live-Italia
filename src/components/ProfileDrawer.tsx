@@ -726,15 +726,20 @@ export function ProfileDrawer({ open, onClose, onTestNotification }: ProfileDraw
                 return filteredHistory.map((deal) => {
                   const safeHref = /^https?:\/\//i.test(deal.offerUrl) ? deal.offerUrl : '#';
                   const removedMs =
-                    (deal.removedAt as { toMillis?: () => number } | undefined)?.toMillis?.() ??
-                    null;
-                  const removedLabel = removedMs
-                    ? new Date(removedMs).toLocaleDateString('it-IT', {
-                        day: '2-digit',
-                        month: '2-digit',
-                        year: 'numeric',
-                      })
-                    : null;
+                    typeof deal.removedAt === 'number'
+                      ? deal.removedAt
+                      : typeof deal.removedAt === 'string'
+                        ? Date.parse(deal.removedAt)
+                        : (deal.removedAt as { toMillis?: () => number } | undefined)?.toMillis?.() ??
+                          null;
+                  const removedLabel =
+                    removedMs && !Number.isNaN(removedMs)
+                      ? new Date(removedMs).toLocaleDateString('it-IT', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                        })
+                      : null;
 
                   return (
                     <div
@@ -840,9 +845,9 @@ export function ProfileDrawer({ open, onClose, onTestNotification }: ProfileDraw
           )}
         </div>
 
-        {/* Footer Sign Out */}
+        {/* Footer Local Persistence */}
         <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
-          <span className="text-xs text-slate-500">Account sincronizzato su Firestore</span>
+          <span className="text-xs text-slate-500">Salvataggio locale nel browser</span>
           <button
             type="button"
             onClick={() => {
@@ -852,7 +857,7 @@ export function ProfileDrawer({ open, onClose, onTestNotification }: ProfileDraw
             className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 cursor-pointer"
           >
             <LogOut className="w-4 h-4" aria-hidden="true" />
-            <span>Esci</span>
+            <span>Azzera dati locali</span>
           </button>
         </div>
       </div>

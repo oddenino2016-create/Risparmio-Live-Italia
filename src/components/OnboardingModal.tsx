@@ -44,7 +44,7 @@ export function OnboardingModal({
   onOpenProfile,
   onJumpToOffers,
 }: OnboardingModalProps) {
-  const { user, profile, savedDeals, signInWithGoogle, updatePreferences } = useAuth();
+  const { user, profile, savedDeals, updatePreferences } = useAuth();
 
   const [step, setStep] = useState(0);
   const [selectedCategories, setSelectedCategories] = useState<DealCategory[]>([]);
@@ -96,10 +96,6 @@ export function OnboardingModal({
   };
 
   const handleSaveInlinePreferences = async () => {
-    if (!user) {
-      await signInWithGoogle();
-      return;
-    }
     setSavingPrefs(true);
     try {
       await updatePreferences({
@@ -208,9 +204,9 @@ export function OnboardingModal({
                 </div>
                 <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
                   <Sparkles className="w-4 h-4 text-emerald-700" aria-hidden="true" />
-                  <p className="text-sm font-semibold text-slate-900">Ricerca IA &amp; Stima</p>
+                  <p className="text-sm font-semibold text-slate-900">Ricerca &amp; Stima</p>
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    Cerca sconti con l&apos;IA e calcola il risparmio annuo su ogni scheda.
+                    Trova sconti all&apos;istante e calcola il risparmio annuo su ogni scheda.
                   </p>
                 </div>
               </div>
@@ -262,19 +258,9 @@ export function OnboardingModal({
               </div>
 
               <div className="pt-1 flex flex-wrap items-center gap-3">
-                {user ? (
-                  <span className="text-xs font-medium text-emerald-700 tabular-nums">
-                    Account attivo ({savedDeals.length} offerte salvate al momento)
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => void signInWithGoogle()}
-                    className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-                  >
-                    Accedi con Google per iniziare a salvare
-                  </button>
-                )}
+                <span className="text-xs font-medium text-emerald-700 tabular-nums">
+                  Salvataggio locale attivo ({savedDeals.length} offerte salvate al momento)
+                </span>
 
                 <button
                   type="button"

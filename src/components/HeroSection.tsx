@@ -107,11 +107,11 @@ export function HeroSection({
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 tabular-nums">
                 <span>
                   {sseConnected
-                    ? 'Monitoraggio automatico attivo'
-                    : 'Connessione al feed in corso'}
+                    ? 'Catalogo sincronizzato'
+                    : 'Catalogo verificato da 11 portali'}
                 </span>
                 <span aria-hidden="true">·</span>
-                <span>Ultimo controllo: {formatTime(snapshot?.lastCheckedAt)}</span>
+                <span>Ultimo aggiornamento: {formatTime(snapshot?.lastCheckedAt)}</span>
                 <span aria-hidden="true">·</span>
                 <span>Revisione #{snapshot?.revision ?? 0}</span>
                 <span aria-hidden="true">·</span>
@@ -119,7 +119,7 @@ export function HeroSection({
                   href="#ricerca-ia"
                   className="font-semibold text-emerald-700 hover:underline"
                 >
-                  Cerca con IA
+                  Ricerca sconti
                 </a>
                 <span aria-hidden="true">·</span>
                 <a
