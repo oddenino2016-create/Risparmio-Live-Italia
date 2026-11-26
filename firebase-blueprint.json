@@ -1,0 +1,343 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Profilo utente autenticato con preferenze di risparmio, categorie seguite e impostazioni di notifica.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID del proprietario del profilo",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Nome visualizzato dell'utente",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Email verificata dell'utente (PII privata)",
+          "maxLength": 160
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "URL opzionale dell'immagine profilo",
+          "maxLength": 500
+        },
+        "preferredCategories": {
+          "type": "array",
+          "description": "Categorie merceologiche preferite dall'utente (max 7)"
+        },
+        "preferredOfferTypes": {
+          "type": "array",
+          "description": "Tipologie di offerta preferite (codice-sconto, cashback, prova-gratis)"
+        },
+        "preferredSources": {
+          "type": "array",
+          "description": "Portali monitorati preferiti (max 11)"
+        },
+        "notifyOnNewDeals": {
+          "type": "boolean",
+          "description": "Mostra notifiche live in-app quando compaiono nuove offerte nelle preferenze"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp server di creazione profilo"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp server ultimo aggiornamento profilo"
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "email",
+        "preferredCategories",
+        "preferredOfferTypes",
+        "preferredSources",
+        "notifyOnNewDeals",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SavedDeal": {
+      "title": "SavedDeal",
+      "description": "Offerta salvata dall'utente nei propri preferiti personali.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identificativo univoco dell'offerta",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID del proprietario",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Titolo dell'offerta",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "merchant": {
+          "type": "string",
+          "description": "Nome del negozio o brand",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "description": "Descrizione sintetica dell'offerta",
+          "maxLength": 400
+        },
+        "category": {
+          "type": "string",
+          "enum": ["codice-sconto", "cashback", "prova-gratis"],
+          "description": "Tipo principale di offerta"
+        },
+        "tags": {
+          "type": "array",
+          "description": "Categorie merceologiche assegnate all'offerta (1-4 tag)"
+        },
+        "sourceId": {
+          "type": "string",
+          "enum": [
+            "buyon",
+            "scontiomaggio",
+            "letyshops",
+            "bestshopping",
+            "scontrinofelice",
+            "widilo",
+            "pgperte",
+            "dimmicosacerchi",
+            "codicerisparmio",
+            "cashbackdeals",
+            "simplybestcoupons"
+          ],
+          "description": "Identificativo della fonte"
+        },
+        "sourceName": {
+          "type": "string",
+          "description": "Nome leggibile della fonte",
+          "maxLength": 60
+        },
+        "offerUrl": {
+          "type": "string",
+          "description": "Link diretto all'offerta",
+          "maxLength": 600
+        },
+        "rewardLabel": {
+          "type": "string",
+          "description": "Etichetta valore (es. Cashback 5%, Coupon 10%)",
+          "maxLength": 60
+        },
+        "couponCode": {
+          "type": "string",
+          "description": "Codice sconto testuale opzionale",
+          "maxLength": 50
+        },
+        "couponHint": {
+          "type": "string",
+          "description": "Suggerimento parziale del codice opzionale",
+          "maxLength": 30
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "URL immagine opzionale",
+          "maxLength": 600
+        },
+        "note": {
+          "type": "string",
+          "description": "Nota personale opzionale dell'utente",
+          "maxLength": 280
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data e ora di scadenza dell'offerta in formato ISO 8601",
+          "maxLength": 40
+        },
+        "reminderEnabled": {
+          "type": "boolean",
+          "description": "Indica se il promemoria push 24 ore prima della scadenza è attivo"
+        },
+        "reminderNotifiedAt": {
+          "type": "string",
+          "description": "Timestamp ISO in cui è stato inviato il promemoria di scadenza",
+          "maxLength": 40
+        },
+        "savedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp server di salvataggio"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "title",
+        "merchant",
+        "description",
+        "category",
+        "tags",
+        "sourceId",
+        "sourceName",
+        "offerUrl",
+        "rewardLabel",
+        "savedAt"
+      ]
+    },
+    "RemovedDeal": {
+      "title": "RemovedDeal",
+      "description": "Offerta precedentemente salvata dall'utente e poi rimossa, conservata nello storico per recuperare vecchi codici sconto.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identificativo univoco dell'offerta",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID del proprietario",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Titolo dell'offerta",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "merchant": {
+          "type": "string",
+          "description": "Nome del negozio o brand",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "description": "Descrizione sintetica dell'offerta",
+          "maxLength": 400
+        },
+        "category": {
+          "type": "string",
+          "enum": ["codice-sconto", "cashback", "prova-gratis"],
+          "description": "Tipo principale di offerta"
+        },
+        "tags": {
+          "type": "array",
+          "description": "Categorie merceologiche assegnate all'offerta (1-4 tag)"
+        },
+        "sourceId": {
+          "type": "string",
+          "enum": [
+            "buyon",
+            "scontiomaggio",
+            "letyshops",
+            "bestshopping",
+            "scontrinofelice",
+            "widilo",
+            "pgperte",
+            "dimmicosacerchi",
+            "codicerisparmio",
+            "cashbackdeals",
+            "simplybestcoupons"
+          ],
+          "description": "Identificativo della fonte"
+        },
+        "sourceName": {
+          "type": "string",
+          "description": "Nome leggibile della fonte",
+          "maxLength": 60
+        },
+        "offerUrl": {
+          "type": "string",
+          "description": "Link diretto all'offerta",
+          "maxLength": 600
+        },
+        "rewardLabel": {
+          "type": "string",
+          "description": "Etichetta valore (es. Cashback 5%, Coupon 10%)",
+          "maxLength": 60
+        },
+        "couponCode": {
+          "type": "string",
+          "description": "Codice sconto testuale opzionale",
+          "maxLength": 50
+        },
+        "couponHint": {
+          "type": "string",
+          "description": "Suggerimento parziale del codice opzionale",
+          "maxLength": 30
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "URL immagine opzionale",
+          "maxLength": 600
+        },
+        "note": {
+          "type": "string",
+          "description": "Nota personale opzionale dell'utente",
+          "maxLength": 280
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data e ora di scadenza dell'offerta in formato ISO 8601",
+          "maxLength": 40
+        },
+        "removedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp server di spostamento nello storico"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "title",
+        "merchant",
+        "description",
+        "category",
+        "tags",
+        "sourceId",
+        "sourceName",
+        "offerUrl",
+        "rewardLabel",
+        "removedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Profili privati degli utenti autenticati e relative preferenze di risparmio."
+    },
+    "/users/{userId}/savedDeals/{dealId}": {
+      "schema": { "$ref": "#/entities/SavedDeal" },
+      "description": "Offerte salvate da ciascun utente."
+    },
+    "/users/{userId}/removedDeals/{dealId}": {
+      "schema": { "$ref": "#/entities/RemovedDeal" },
+      "description": "Storico delle offerte precedentemente salvate e poi rimosse dall'utente."
+    }
+  }
+}

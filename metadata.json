@@ -1,0 +1,8 @@
+{
+  "name": "Risparmio Live Italia Hub",
+  "description": "Aggregatore automatico in tempo reale di codici sconto, cashback, spendi e riprendi e prove gratis da 11 portali italiani (Widilo, P&G Per Te, DimmiCosaCerchi, CodiceRisparmio, CashbackDeals, SimplyBestCoupons, BuyOn, ScontOmaggio, LetyShops, Bestshopping, ScontrinoFelice). Creata da Andrea Oddenino.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
